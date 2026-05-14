@@ -287,7 +287,7 @@ export default function App() {
 
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-2.5-flash-lite",
         contents: followUpQuestion 
           ? `The user is refining their decision. 
              Initial Decision: "${decision}"
@@ -674,7 +674,7 @@ export default function App() {
               <div className="flex items-center justify-between p-4 border-t border-[#ffffff05]">
                 <div className="flex gap-2 text-[#8E9299] text-xs font-mono">
                   <Brain className="w-4 h-4" />
-                  <span>Powered by Gemini 2.0 Flash</span>
+                  <span>Powered by Gemini 2.5 Flash-Lite</span>
                 </div>
                 <button 
                   onClick={() => analyzeDecision()}
