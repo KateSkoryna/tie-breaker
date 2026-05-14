@@ -16,7 +16,8 @@ import {
   Trash2,
   ChevronRight,
   Clock,
-  X
+  X,
+  Share2
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 
@@ -150,6 +151,13 @@ export default function App() {
 
   const [thread, setThread] = useState<{ question: string; analysis: DecisionAnalysis }[]>([]);
   const [followUp, setFollowUp] = useState('');
+  const [showShareCopy, setShowShareCopy] = useState(false);
+
+  const copyShareLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setShowShareCopy(true);
+    setTimeout(() => setShowShareCopy(false), 2000);
+  };
 
   const analyzeDecision = async (answers?: Record<string, string>, followUpQuestion?: string) => {
     if (!decision.trim() && !followUpQuestion) return;
@@ -420,10 +428,17 @@ export default function App() {
             <motion.div 
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[#ffffff10] bg-[#ffffff05] mb-4"
+              className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[#ffffff10] bg-[#ffffff05] mb-4 relative"
             >
               <Scale className="w-4 h-4 text-[#FF4E00]" />
               <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#8E9299]">The Ultimate Tie Breaker</span>
+              <button 
+                onClick={copyShareLink}
+                className="ml-2 pl-2 border-l border-white/10 text-[10px] font-mono uppercase tracking-widest text-[#FF4E00] hover:text-white transition-colors flex items-center gap-1"
+              >
+                <Share2 className="w-3 h-3" />
+                {showShareCopy ? 'Copied' : 'Share'}
+              </button>
             </motion.div>
             <motion.h1 
               initial={{ opacity: 0, y: -20 }}
