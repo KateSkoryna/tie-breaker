@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprints
+    function isValidUser(data) {
+      return data.personalProfile is string && data.personalProfile.size() <= 5000 &&
+             data.email is string && data.email.size() <= 256 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidDecision(data) {
+      return data.decision is string && data.decision.size() <= 2000 &&
+             data.timestamp is number &&
+             data.analysis is map &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    // User Profile
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && 
+                      isValidId(userId) && 
+                      isValidUser(incoming()) && 
+                      incoming().createdAt == request.time &&
+                      incoming().updatedAt == request.time &&
+                      incoming().keys().hasAll(['personalProfile', 'email', 'createdAt', 'updatedAt']) &&
+                      incoming().keys().size() == 4;
+      
+      allow update: if isOwner(userId) &&
+                      isValidUser(incoming()) &&
+                      incoming().updatedAt == request.time &&
+                      incoming().createdAt == existing().createdAt && // Immutable
+                      incoming().email == existing().email &&         // Immutable
+                      incoming().diff(existing()).affectedKeys().hasOnly(['personalProfile', 'updatedAt']);
+
+      // History Sub-collection
+      match /history/{decisionId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+                        isValidId(decisionId) &&
+                        isValidDecision(incoming()) &&
+                        incoming().createdAt == request.time &&
+                        incoming().keys().hasAll(['decision', 'timestamp', 'analysis', 'userId', 'createdAt']) &&
+                        // userAnswers is optional
+                        (incoming().keys().size() == 5 || (incoming().keys().size() == 6 && incoming().userAnswers is map));
+
+        allow delete: if isOwner(userId);
+        // Decisions are mostly immutable in this app, but let's say we don't allow updates for now.
+        allow update: if false;
+      }
+    }
+  }
+}

@@ -17,9 +17,33 @@ import {
   ChevronRight,
   Clock,
   X,
-  Share2
+  Share2,
+  LogIn,
+  LogOut,
+  User as UserIcon
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { 
+  collection, 
+  query, 
+  orderBy, 
+  onSnapshot, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  getDoc,
+  limit
+} from 'firebase/firestore';
+import { 
+  auth, 
+  db, 
+  loginWithGoogle, 
+  logout, 
+  OperationType, 
+  handleFirestoreError,
+  serverTimestamp 
+} from './lib/firebase';
 
 // --- Types ---
 
@@ -117,6 +141,8 @@ const getRelativeTime = (timestamp: number) => {
 // --- App Component ---
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [decision, setDecision] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<DecisionAnalysis | null>(null);
@@ -127,27 +153,78 @@ export default function App() {
   // Interactive Questioning State
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
 
-  // Personal Profile
-  const [personalProfile, setPersonalProfile] = useState(() => {
-    return localStorage.getItem('tiebreaker_profile') || '';
-  });
+  // States for Firestore data
+  const [personalProfile, setPersonalProfile] = useState('');
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('tiebreaker_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch Profile and History from Firestore
+  useEffect(() => {
+    if (!currentUser) {
+      setPersonalProfile('');
+      setHistory([]);
+      return;
     }
-  });
 
-  useEffect(() => {
-    localStorage.setItem('tiebreaker_history', JSON.stringify(history));
-  }, [history]);
+    // Subscribe to History
+    const historyPath = `users/${currentUser.uid}/history`;
+    const q = query(
+      collection(db, historyPath),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
 
-  useEffect(() => {
-    localStorage.setItem('tiebreaker_profile', personalProfile);
-  }, [personalProfile]);
+    const unsubscribeHistory = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id,
+      })) as HistoryItem[];
+      setHistory(items);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, historyPath);
+    });
+
+    // Fetch Profile
+    const profilePath = `users/${currentUser.uid}`;
+    const fetchProfile = async () => {
+      try {
+        const docRef = doc(db, profilePath);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setPersonalProfile(docSnap.data().personalProfile);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.GET, profilePath);
+      }
+    };
+    fetchProfile();
+
+    return () => unsubscribeHistory();
+  }, [currentUser]);
+
+  // Sync profile changes to Firestore (Debounced or on blur would be better, but let's do a save helper)
+  const saveProfile = async (profileText: string) => {
+    if (!currentUser) return;
+    const path = `users/${currentUser.uid}`;
+    try {
+      await setDoc(doc(db, path), {
+        personalProfile: profileText,
+        email: currentUser.email,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp() // setDoc will overwrite, rules handle immutability via diff() if we use updateDoc, but setDoc with merge: true is better if we want to ensure existence
+      }, { merge: true });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, path);
+    }
+  };
 
   const [thread, setThread] = useState<{ question: string; analysis: DecisionAnalysis }[]>([]);
   const [followUp, setFollowUp] = useState('');
@@ -187,7 +264,7 @@ export default function App() {
           : `Analyze this decision: "${decision}". 
              ${contextStr}
              ${answersStr}
-
+ 
              CRITICAL: If the decision depends heavily on health, finances, or personal constraints that the user hasn't specified in the decision or profile, use the 'clarifying_questions' field to ask for that missing info. DO NOT give a verdict if you are guessing about critical personal context.
              
              If you have enough information, provide a detailed analysis including Pros/Cons, a comparison table, and a SWOT analysis. 
@@ -214,15 +291,23 @@ export default function App() {
       }
 
       // If it's a final verdict, save to history
-      if (data.verdict) {
-        const newHistoryItem: HistoryItem = {
-          id: crypto.randomUUID(),
-          timestamp: Date.now(),
+      if (data.verdict && currentUser) {
+        const id = crypto.randomUUID();
+        const historyPath = `users/${currentUser.uid}/history/${id}`;
+        const newHistoryItem = {
           decision: followUpQuestion ? `${decision} (Refinement: ${followUpQuestion})` : decision,
           analysis: data,
-          userAnswers: answers
+          userAnswers: answers || null,
+          timestamp: Date.now(),
+          userId: currentUser.uid,
+          createdAt: serverTimestamp()
         };
-        setHistory(prev => [newHistoryItem, ...prev].slice(0, 50));
+
+        try {
+          await setDoc(doc(db, historyPath), newHistoryItem);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, historyPath);
+        }
         
         if (data.comparison) setActiveTab('comparison');
         else if (data.swot) setActiveTab('swot');
@@ -296,14 +381,29 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const deleteHistoryItem = (id: string, e: React.MouseEvent) => {
+  const deleteHistoryItem = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setHistory(prev => prev.filter(item => item.id !== id));
+    if (!currentUser) return;
+    const path = `users/${currentUser.uid}/history/${id}`;
+    try {
+      await deleteDoc(doc(db, path));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, path);
+    }
   };
 
-  const clearHistory = () => {
-    if (confirm('Are you sure you want to clear all history?')) {
-      setHistory([]);
+  const clearHistory = async () => {
+    if (confirm('Are you sure you want to clear all history? This will delete all your records from the database.')) {
+      // For a real app, you'd batch delete or have a cloud function.
+      // Here, we'll delete them one by one for simplicity as it's limited to 50.
+      for (const item of history) {
+        const path = `users/${currentUser?.uid}/history/${item.id}`;
+        try {
+          await deleteDoc(doc(db, path));
+        } catch (err) {
+          console.error("Failed to delete", item.id);
+        }
+      }
     }
   };
 
@@ -326,7 +426,7 @@ export default function App() {
             <>
               <div className="flex items-center gap-2">
                 <Brain className="w-4 h-4 text-[#FF4E00]" />
-                <span className="text-sm font-mono uppercase tracking-widest">Profile & History</span>
+                <span className="text-sm font-mono uppercase tracking-widest">Workspace</span>
               </div>
               <button 
                 onClick={() => setShowHistory(false)}
@@ -348,16 +448,66 @@ export default function App() {
         </div>
 
         <div className={`flex-1 overflow-y-auto custom-scrollbar ${!showHistory && 'hidden'}`}>
+          {/* User Profile */}
+          <div className="p-4 border-b border-[#ffffff05]">
+            {isAuthLoading ? (
+              <div className="flex items-center justify-center py-2 h-10">
+                <Loader2 className="w-4 h-4 animate-spin text-[#8E9299]" />
+              </div>
+            ) : currentUser ? (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3 overflow-hidden">
+                  {currentUser.photoURL ? (
+                    <img src={currentUser.photoURL} alt="" className="w-8 h-8 rounded-full border border-white/10" referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center shrink-0">
+                      <UserIcon className="w-4 h-4 text-[#8E9299]" />
+                    </div>
+                  )}
+                  <div className="text-left min-w-0">
+                    <p className="text-xs font-medium text-white truncate">{currentUser.displayName || 'User'}</p>
+                    <button 
+                      onClick={() => logout()} 
+                      className="text-[10px] text-[#FF4E00] hover:underline flex items-center gap-1"
+                    >
+                      <LogOut className="w-2.5 h-2.5" />
+                      Logout
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <button 
+                onClick={() => loginWithGoogle()}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-white text-black rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-[0.98] transition-all"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                Login for Private History
+              </button>
+            )}
+          </div>
+
           {/* Personal Profile Section */}
           <div className="p-4 border-b border-[#ffffff05]">
-            <h4 className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#4A4D54] mb-3">Your Context</h4>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#4A4D54]">Your Context</h4>
+              {currentUser && personalProfile && (
+                <button 
+                  onClick={() => saveProfile(personalProfile)}
+                  className="text-[9px] font-mono uppercase tracking-widest text-[#FF4E00] hover:text-white transition-colors"
+                >
+                  Save
+                </button>
+              )}
+            </div>
             <textarea
               value={personalProfile}
               onChange={(e) => setPersonalProfile(e.target.value)}
-              placeholder="e.g. Allergies, budget constraints, risk tolerance, allergies..."
-              className="w-full bg-[#1A1C21] border border-[#ffffff05] rounded-xl p-3 text-xs text-[#8E9299] focus:text-white transition-colors focus:ring-1 focus:ring-[#FF4E00] resize-none h-24"
+              disabled={!currentUser}
+              placeholder={currentUser ? "e.g. Allergies, budget constraints, risk tolerance..." : "Please login to set your personal context profile."}
+              className="w-full bg-[#1A1C21] border border-[#ffffff05] rounded-xl p-3 text-xs text-[#8E9299] focus:text-white transition-colors focus:ring-1 focus:ring-[#FF4E00] resize-none h-24 disabled:opacity-30 disabled:cursor-not-allowed"
             />
-            <p className="text-[9px] text-[#4A4D54] mt-2 italic">This context is sent with every decision to help AI know you better.</p>
+            <p className="text-[9px] text-[#4A4D54] mt-2 italic">This context is used to tailor AI advice specifically to you.</p>
           </div>
 
           <div className="p-4">

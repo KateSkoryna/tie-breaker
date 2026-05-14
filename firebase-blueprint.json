@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User specific settings and context profile.",
+      "type": "object",
+      "properties": {
+        "personalProfile": { "type": "string", "description": "The user's personal context profile for AI analysis." },
+        "email": { "type": "string", "format": "email" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["personalProfile", "createdAt", "updatedAt"]
+    },
+    "Decision": {
+      "title": "Decision History",
+      "description": "A single decision analysis record.",
+      "type": "object",
+      "properties": {
+        "decision": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "analysis": { "type": "object" },
+        "userAnswers": { "type": "object" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["decision", "timestamp", "analysis", "userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile document."
+    },
+    "/users/{userId}/history/{decisionId}": {
+      "schema": "Decision",
+      "description": "History of decisions for a specific user."
+    }
+  }
+}
