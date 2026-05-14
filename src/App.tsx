@@ -58,7 +58,7 @@ interface DecisionAnalysis {
   };
   comparison?: {
     headers: string[];
-    rows: string[][];
+    rows: { cells: string[] }[];
   };
   swot?: {
     strengths: string[];
@@ -108,7 +108,16 @@ const ANALYSIS_SCHEMA = {
       type: Type.OBJECT,
       properties: {
         headers: { type: Type.ARRAY, items: { type: Type.STRING } },
-        rows: { type: Type.ARRAY, items: { type: Type.ARRAY, items: { type: Type.STRING } } }
+        rows: { 
+          type: Type.ARRAY, 
+          items: { 
+            type: Type.OBJECT,
+            properties: {
+              cells: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ["cells"]
+          } 
+        }
       }
     },
     swot: {
@@ -199,7 +208,25 @@ export default function App() {
         const docRef = doc(db, profilePath);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
-          setPersonalProfile(docSnap.data().personalProfile);
+          setPersonalProfile(docSnap.data().personalProfile || '');
+          // Update basic info if needed (name/photo might have changed)
+          await setDoc(docRef, {
+            displayName: currentUser.displayName,
+            email: currentUser.email,
+            photoURL: currentUser.photoURL,
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
+        } else {
+          // Create the root user document so it shows up in the console
+          await setDoc(docRef, {
+            displayName: currentUser.displayName,
+            email: currentUser.email,
+            photoURL: currentUser.photoURL,
+            personalProfile: '',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+          setPersonalProfile('');
         }
       } catch (err) {
         handleFirestoreError(err, OperationType.GET, profilePath);
@@ -273,7 +300,7 @@ export default function App() {
     setTimeout(() => setShowShareCopy(false), 2000);
   };
 
-  const analyzeDecision = async (answers?: Record<string, string>, followUpQuestion?: string) => {
+  const analyzeDecision = async (answers?: Record<string, string>, followUpQuestion?: string, skipQuestions = false) => {
     if (!decision.trim() && !followUpQuestion) return;
     
     setIsAnalyzing(true);
@@ -281,6 +308,7 @@ export default function App() {
 
     const contextStr = personalProfile ? `User Profile/Context: ${personalProfile}` : 'No specific user profile provided.';
     const answersStr = answers ? `User responses to your previous questions: ${JSON.stringify(answers)}` : '';
+    const skipInstruction = skipQuestions ? "\nTHE USER GAVE A QUICK ANSWER REQUEST: Skip clarifying questions and provide your best possible verdict now based ONLY on the current info." : "";
     const threadStr = thread.length > 0 
       ? `Previous steps in this decision thread:\n${thread.map((t, i) => `Step ${i+1}: Q: ${t.question} | Verdict: ${t.analysis.verdict}`).join('\n')}`
       : '';
@@ -300,11 +328,11 @@ export default function App() {
              If you need more personal context for this refinement, ask 1-2 clarifying questions.`
           : `Analyze this decision: "${decision}". 
              ${contextStr}
-             ${answersStr}
+             ${answersStr}${skipInstruction}
  
-             CRITICAL: If the decision depends heavily on health, finances, or personal constraints that the user hasn't specified in the decision or profile, use the 'clarifying_questions' field to ask for that missing info. DO NOT give a verdict if you are guessing about critical personal context.
+             ${skipQuestions ? "Provide a final verdict and reasoning immediately." : "CRITICAL: If the decision depends heavily on health, finances, or personal constraints that the user hasn't specified in the decision or profile, use the 'clarifying_questions' field to ask for that missing info. DO NOT give a verdict if you are guessing about critical personal context."}
              
-             If you have enough information, provide a detailed analysis including Pros/Cons, a comparison table, and a SWOT analysis. 
+             If you have enough information${skipQuestions ? " (or if the user requested to skip context)" : ""}, provide a detailed analysis including Pros/Cons, a comparison table, and a SWOT analysis. 
              Be the ultimate tie breaker.`,
         config: {
           responseMimeType: "application/json",
@@ -329,31 +357,43 @@ export default function App() {
 
       // If it's a final verdict, save to history
       if (data.verdict && currentUser) {
+        console.log("Saving to history for user:", currentUser.uid);
         const id = crypto.randomUUID();
         const historyPath = `users/${currentUser.uid}/history/${id}`;
-        const newHistoryItem = {
+        const newHistoryItem: any = {
           decision: followUpQuestion ? `${decision} (Refinement: ${followUpQuestion})` : decision,
           analysis: data,
-          userAnswers: answers || null,
           timestamp: Date.now(),
           userId: currentUser.uid,
           createdAt: serverTimestamp()
         };
 
+        if (answers && Object.keys(answers).length > 0) {
+          newHistoryItem.userAnswers = answers;
+        }
+
         try {
           await setDoc(doc(db, historyPath), newHistoryItem);
-        } catch (err) {
+          console.log("History saved successfully to", historyPath);
+        } catch (err: any) {
+          console.error("Firestore Save Error:", err);
           handleFirestoreError(err, OperationType.WRITE, historyPath);
         }
         
         if (data.comparison) setActiveTab('comparison');
         else if (data.swot) setActiveTab('swot');
         else setActiveTab('pros_cons');
+      } else if (!currentUser) {
+        console.warn("No user logged in, history not saved.");
+        setError({
+          title: "History Not Saved",
+          message: "You must be logged in to save decisions to your history.",
+          action: "Click the login icon in the top right to sign in with Google."
+        });
       }
 
     } catch (err: any) {
       console.error("Analysis Error:", err);
-      const message = err.message?.toUpperCase() || "";
       
       let errorDetails = {
         title: "Analysis Failed",
@@ -361,42 +401,63 @@ export default function App() {
         action: "Please try again in a few moments."
       };
 
-      if (message.includes("SAFETY") || message.includes("BLOCKED")) {
-        errorDetails = {
-          title: "Safety Shield",
-          message: "This decision involves topics that trigger AI safety filters.",
-          action: "Try rephrasing your prompt to be more neutral or less sensitive."
-        };
-      } else if (message.includes("QUOTA") || message.includes("RATE_LIMIT") || message.includes("429")) {
-        errorDetails = {
-          title: "Rate Limit Reached",
-          message: "You've sent too many requests in a short time.",
-          action: "Wait about 60 seconds before trying to break the tie again."
-        };
-      } else if (message.includes("EMPTY_RESPONSE")) {
-        errorDetails = {
-          title: "Vague Input",
-          message: "The AI couldn't extract a clear decision from your input.",
-          action: "Try being more specific about the choices you are weighing."
-        };
-      } else if (message.includes("API_KEY") || message.includes("403")) {
-        errorDetails = {
-          title: "Configuration Error",
-          message: "The API key appears to be missing or invalid.",
-          action: "Ensure GEMINI_API_KEY is set correctly in the Secrets panel."
-        };
-      } else if (message.includes("NETWORK") || message.includes("FETCH") || err.name === "TypeError") {
-        errorDetails = {
-          title: "Connection Lost",
-          message: "Could not reach the AI servers.",
-          action: "Check your internet connection and try again."
-        };
-      } else if (err instanceof SyntaxError) {
-        errorDetails = {
-          title: "Formatting Error",
-          message: "The AI's response was garbled or incomplete.",
-          action: "Try a shorter, more direct decision prompt."
-        };
+      // Check for Firestore Error JSON
+      let isFirestoreError = false;
+      try {
+        if (typeof err.message === 'string' && err.message.trim().startsWith('{')) {
+          const fsError = JSON.parse(err.message);
+          if (fsError.operationType) {
+            isFirestoreError = true;
+            errorDetails = {
+              title: `Database Error (${fsError.operationType})`,
+              message: fsError.error,
+              action: `Check rules/config for path: ${fsError.path}. Auth Status: ${fsError.authInfo.userId ? 'Authenticated' : 'Anonymous'}`
+            };
+          }
+        }
+      } catch (parseErr) {
+        // Not a JSON error, continue with standard checks
+      }
+
+      if (!isFirestoreError) {
+        const message = err.message?.toUpperCase() || "";
+        if (message.includes("SAFETY") || message.includes("BLOCKED")) {
+          errorDetails = {
+            title: "Safety Shield",
+            message: "This decision involves topics that trigger AI safety filters.",
+            action: "Try rephrasing your prompt to be more neutral or less sensitive."
+          };
+        } else if (message.includes("QUOTA") || message.includes("RATE_LIMIT") || message.includes("429")) {
+          errorDetails = {
+            title: "Rate Limit Reached",
+            message: "You've sent too many requests in a short time.",
+            action: "Wait about 60 seconds before trying to break the tie again."
+          };
+        } else if (message.includes("EMPTY_RESPONSE")) {
+          errorDetails = {
+            title: "Vague Input",
+            message: "The AI couldn't extract a clear decision from your input.",
+            action: "Try being more specific about the choices you are weighing."
+          };
+        } else if (message.includes("API_KEY") || message.includes("403")) {
+          errorDetails = {
+            title: "Configuration Error",
+            message: "The API key appears to be missing or invalid.",
+            action: "Ensure your API keys are correctly set in the Secrets panel."
+          };
+        } else if (message.includes("NETWORK") || message.includes("FETCH") || err.name === "TypeError") {
+          errorDetails = {
+            title: "Connection Lost",
+            message: "Could not reach the AI servers or Database.",
+            action: "Check your internet connection. Also, ensure you have 'Created' the Firestore database in your Firebase Console and enabled the 'Google' provider in Authentication."
+          };
+        } else if (err instanceof SyntaxError) {
+          errorDetails = {
+            title: "Formatting Error",
+            message: "The AI's response was garbled or incomplete.",
+            action: "Try a shorter, more direct decision prompt."
+          };
+        }
       }
 
       setError(errorDetails);
@@ -763,23 +824,33 @@ export default function App() {
                         ))}
                       </div>
 
-                      <button 
-                        onClick={() => analyzeDecision(userAnswers)}
-                        disabled={isAnalyzing || result.clarifying_questions.some(q => !userAnswers[q]?.trim())}
-                        className="w-full bg-white text-black py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50"
-                      >
-                        {isAnalyzing ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Recalculating...</span>
-                          </>
-                        ) : (
-                          <>
-                            <span>Finalize Decision</span>
-                            <ChevronRight className="w-4 h-4" />
-                          </>
-                        )}
-                      </button>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        <button 
+                          onClick={() => analyzeDecision(userAnswers)}
+                          disabled={isAnalyzing || result.clarifying_questions.some(q => !userAnswers[q]?.trim())}
+                          className="flex-1 bg-white text-black py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99] transition-all disabled:opacity-50"
+                        >
+                          {isAnalyzing ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Recalculating...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>Finalize Decision</span>
+                              <ChevronRight className="w-4 h-4" />
+                            </>
+                          )}
+                        </button>
+                        
+                        <button 
+                          onClick={() => analyzeDecision(undefined, undefined, true)}
+                          disabled={isAnalyzing}
+                          className="flex-1 bg-white/5 border border-white/10 text-white py-4 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-white/10 transition-all disabled:opacity-50"
+                        >
+                          Skip and get quick answer
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -881,7 +952,7 @@ export default function App() {
                           <tbody>
                             {result.comparison.rows.map((row, i) => (
                               <tr key={i} className="border-b border-[#ffffff05] hover:bg-white/[0.01] transition-colors">
-                                {row.map((cell, j) => (
+                                {row.cells.map((cell, j) => (
                                   <td key={j} className={`p-6 ${j === 0 ? 'text-white font-medium' : 'text-[#8E9299]'}`}>
                                     {cell}
                                   </td>
