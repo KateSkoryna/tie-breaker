@@ -1,6 +1,6 @@
 {
   "name": "The Tie Breaker",
-  "description": "An AI-powered decision-making assistant that provides pros/cons, SWOT analysis, and comparison tables to help you break the tie on difficult choices.",
+  "description": "Tiebreaker AI helps you defeat choice paralysis by providing deep, structured analysis for any dilemma. By factoring in your personal context profile, it generates objective verdicts, SWOT analyses, and comparison tables, ensuring every decision is backed by logic and tailored to your unique constraints.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

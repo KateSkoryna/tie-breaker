@@ -12,7 +12,7 @@ service cloud.firestore {
     }
 
     function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+      return isSignedIn() && request.auth.uid == userId && request.auth.token.email_verified == true;
     }
 
     function isValidId(id) {
@@ -59,7 +59,8 @@ service cloud.firestore {
                       incoming().updatedAt == request.time &&
                       incoming().createdAt == existing().createdAt && // Immutable
                       incoming().email == existing().email &&         // Immutable
-                      incoming().diff(existing()).affectedKeys().hasOnly(['personalProfile', 'updatedAt']);
+                      incoming().diff(existing()).affectedKeys().hasOnly(['personalProfile', 'updatedAt', 'email', 'createdAt']); 
+                      // Note: we allow email and createdAt in affectedKeys but they must match existing()
 
       // History Sub-collection
       match /history/{decisionId} {

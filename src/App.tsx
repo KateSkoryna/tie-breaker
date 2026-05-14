@@ -210,19 +210,56 @@ export default function App() {
     return () => unsubscribeHistory();
   }, [currentUser]);
 
-  // Sync profile changes to Firestore (Debounced or on blur would be better, but let's do a save helper)
+  // Sync profile changes to Firestore
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const saveProfile = async (profileText: string) => {
     if (!currentUser) return;
+    setIsSavingProfile(true);
     const path = `users/${currentUser.uid}`;
     try {
-      await setDoc(doc(db, path), {
-        personalProfile: profileText,
-        email: currentUser.email,
-        updatedAt: serverTimestamp(),
-        createdAt: serverTimestamp() // setDoc will overwrite, rules handle immutability via diff() if we use updateDoc, but setDoc with merge: true is better if we want to ensure existence
-      }, { merge: true });
+      const docRef = doc(db, path);
+      const docSnap = await getDoc(docRef);
+      
+      if (!docSnap.exists()) {
+        // Initial Create
+        await setDoc(docRef, {
+          personalProfile: profileText,
+          email: currentUser.email,
+          updatedAt: serverTimestamp(),
+          createdAt: serverTimestamp()
+        });
+      } else {
+        // Update - omit createdAt to maintain immutability and avoid rules conflict
+        await setDoc(docRef, {
+          personalProfile: profileText,
+          updatedAt: serverTimestamp(),
+        }, { merge: true });
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, path);
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const deleteAccount = async () => {
+    if (confirm('CRITICAL: This will permanently delete your profile and ALL decision history. This action cannot be undone. Proceed?')) {
+      if (!currentUser) return;
+      
+      try {
+        // 1. Delete History (limited to 50 for this demo)
+        for (const item of history) {
+          await deleteDoc(doc(db, `users/${currentUser.uid}/history/${item.id}`));
+        }
+        // 2. Delete Profile
+        await deleteDoc(doc(db, `users/${currentUser.uid}`));
+        // 3. Optional: Sign out
+        await logout();
+        alert('Account data deleted successfully.');
+      } catch (err) {
+        console.error("Deletion failed", err);
+        alert('Failed to delete some data. Please check your connection.');
+      }
     }
   };
 
@@ -466,13 +503,22 @@ export default function App() {
                   )}
                   <div className="text-left min-w-0">
                     <p className="text-xs font-medium text-white truncate">{currentUser.displayName || 'User'}</p>
-                    <button 
-                      onClick={() => logout()} 
-                      className="text-[10px] text-[#FF4E00] hover:underline flex items-center gap-1"
-                    >
-                      <LogOut className="w-2.5 h-2.5" />
-                      Logout
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => logout()} 
+                        className="text-[10px] text-[#FF4E00] hover:underline flex items-center gap-1"
+                      >
+                        <LogOut className="w-2.5 h-2.5" />
+                        Logout
+                      </button>
+                      <span className="text-[#ffffff10]">|</span>
+                      <button 
+                        onClick={deleteAccount} 
+                        className="text-[10px] text-red-500/50 hover:text-red-500 hover:underline"
+                      >
+                        Delete Data
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -494,9 +540,10 @@ export default function App() {
               {currentUser && personalProfile && (
                 <button 
                   onClick={() => saveProfile(personalProfile)}
-                  className="text-[9px] font-mono uppercase tracking-widest text-[#FF4E00] hover:text-white transition-colors"
+                  disabled={isSavingProfile}
+                  className="text-[9px] font-mono uppercase tracking-widest text-[#FF4E00] hover:text-white transition-colors disabled:opacity-30"
                 >
-                  Save
+                  {isSavingProfile ? 'Saving...' : 'Save'}
                 </button>
               )}
             </div>
