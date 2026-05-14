@@ -641,7 +641,7 @@ export default function App() {
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 }}
-              className="text-5xl lg:text-7xl font-light tracking-tight mb-4 bg-gradient-to-b from-white to-[#ffffff60] bg-clip-text text-transparent"
+              className="text-5xl lg:text-7xl font-light tracking-tight mb-4 bg-gradient-to-b from-white to-[#ffffff60] bg-clip-text text-transparent pb-2"
             >
               Make the <span className="italic font-serif">Right</span> Move
             </motion.h1>
