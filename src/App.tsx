@@ -54,7 +54,13 @@ interface HistoryItem {
 
 // --- AI Setup ---
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const API_KEY = process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY;
+
+if (!API_KEY) {
+  console.warn("Gemini API Key missing. Please set GEMINI_API_KEY (AI Studio) or VITE_GEMINI_API_KEY (.env)");
+}
+
+const ai = new GoogleGenAI({ apiKey: API_KEY! });
 
 const ANALYSIS_SCHEMA = {
   type: Type.OBJECT,
